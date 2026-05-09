@@ -23,7 +23,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Pinata not configured." }, { status: 500 });
     }
 
-    // Store key as JSON file on Pinata with searchable metadata
+    // Store key as JSON file on Pinata
+    // The file name is deterministic: key_<full_video_cid>.json
+    // This allows retrieval by fetching a known IPFS path via gateway
     const keyPayload = JSON.stringify({
       keyBase64,
       creator,
@@ -31,23 +33,19 @@ export async function POST(req: NextRequest) {
       createdAt: new Date().toISOString(),
     });
 
-    const keyFile = new File(
-      [keyPayload],
-      `cipherstream_key_${cid.slice(0, 16)}.json`,
-      { type: "application/json" }
-    );
+    const fileName = `key_${cid}.json`;
+    const keyFile = new File([keyPayload], fileName, { type: "application/json" });
 
     const formData = new FormData();
     formData.append("file", keyFile);
     formData.append(
       "pinataMetadata",
       JSON.stringify({
-        name: `cipherstream_key_${cid.slice(0, 16)}`,
+        name: fileName,
         keyvalues: {
           app: "cipherstream",
           type: "aes_key",
           videoCid: cid,
-          creator: creator.toLowerCase(),
         },
       })
     );
@@ -62,21 +60,16 @@ export async function POST(req: NextRequest) {
     if (!pinRes.ok) {
       const errText = await pinRes.text();
       console.error("Pinata key upload error:", errText);
-      return NextResponse.json(
-        { error: "Failed to store key on IPFS." },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "Failed to store key on IPFS." }, { status: 502 });
     }
 
     const pinData = await pinRes.json();
-    console.log(
-      `[KeyRegistry] Key stored. keyCid=${pinData.IpfsHash} videoCid=${cid.slice(0, 20)}...`
-    );
+    const keyCid: string = pinData.IpfsHash;
 
-    return NextResponse.json(
-      { success: true, keyCid: pinData.IpfsHash },
-      { status: 200 }
-    );
+    console.log(`[KeyRegistry] Key stored. keyCid=${keyCid} videoCid=${cid.slice(0, 20)}...`);
+
+    // Return the keyCid so the frontend can store it in localStorage
+    return NextResponse.json({ success: true, keyCid }, { status: 200 });
   } catch (err) {
     console.error("Key register error:", err);
     return NextResponse.json({ error: "Internal server error." }, { status: 500 });

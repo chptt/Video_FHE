@@ -220,6 +220,13 @@ export function UploadVideoForm() {
         const err = await keyRes.json();
         throw new Error(err.error || "Key registration failed.");
       }
+      const { keyCid } = await keyRes.json();
+
+      // Store keyCid in localStorage so the player can retrieve the key
+      // keyCid is the IPFS CID of the key JSON file on Pinata
+      if (keyCid && typeof window !== "undefined") {
+        localStorage.setItem(`cipherstream_key_${encryptedVideoCID}`, keyCid);
+      }
       setProgress(80);
 
       // ── Step 5: Submit on-chain transaction ──────────────

@@ -100,13 +100,25 @@ export function EncryptedVideoPlayer({
       setPlayerState("fetching");
       setProgress(10);
 
-      // Fetch the AES key from the server-side key registry
-      // TODO (production): Replace with Lit Protocol or wallet-based key retrieval
+      // Look up the keyCid from localStorage (stored after upload)
+      // keyCid is the IPFS CID of the key JSON file stored on Pinata
+      const keyCid = typeof window !== "undefined"
+        ? localStorage.getItem(`cipherstream_key_${encryptedVideoCID}`)
+        : null;
+
+      if (!keyCid) {
+        throw new Error(
+          "Decryption key reference not found in this browser. If you are the creator, please re-upload the video. If you are a viewer, the creator needs to re-upload with the latest version."
+        );
+      }
+
+      // Fetch the AES key from IPFS via server route (avoids CORS on gateway)
       const keyRes = await fetch(
-        `/api/key/retrieve?videoId=${videoId}&cid=${encryptedVideoCID}`
+        `/api/key/retrieve?keyCid=${keyCid}&cid=${encryptedVideoCID}`
       );
       if (!keyRes.ok) {
-        throw new Error("Could not retrieve decryption key from server.");
+        const errData = await keyRes.json().catch(() => ({}));
+        throw new Error(errData.error || "Could not retrieve decryption key from server.");
       }
       const { keyBase64 } = await keyRes.json();
       setProgress(25);
