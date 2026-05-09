@@ -162,22 +162,30 @@ export function useCreateVideo() {
     thumbnailCID: string;
     priceEth: string;
     accessDurationSeconds: number;
-  }) => {
+  }): Promise<void> => {
     const fees = await getGasFees(publicClient);
-    writeContract({
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
-      functionName: "createVideo",
-      args: [
-        params.title,
-        params.description,
-        params.encryptedVideoCID,
-        params.thumbnailCID,
-        parseEther(params.priceEth),
-        BigInt(params.accessDurationSeconds),
-      ],
-      maxFeePerGas: fees.maxFeePerGas,
-      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+    return new Promise((resolve, reject) => {
+      writeContract(
+        {
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: "createVideo",
+          args: [
+            params.title,
+            params.description,
+            params.encryptedVideoCID,
+            params.thumbnailCID,
+            parseEther(params.priceEth),
+            BigInt(params.accessDurationSeconds),
+          ],
+          maxFeePerGas: fees.maxFeePerGas,
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        },
+        {
+          onSuccess: () => resolve(),
+          onError: (err) => reject(err),
+        }
+      );
     });
   };
 

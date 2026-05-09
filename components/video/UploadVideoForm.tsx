@@ -1,18 +1,18 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { useRouter } from "next/navigation";
 import { useCreateVideo } from "@/lib/web3/hooks";
+import { useVideoCount } from "@/lib/web3/hooks";
 import { encryptFile } from "@/lib/crypto/videoCrypto";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
-  Upload,
   Video,
   Image as ImageIcon,
   Lock,
@@ -27,7 +27,6 @@ import { isContractConfigured } from "@/lib/web3/contract";
 
 const MAX_VIDEO_MB = Number(process.env.NEXT_PUBLIC_MAX_VIDEO_SIZE_MB || 50);
 const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
-
 const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/webm", "video/quicktime"];
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
@@ -45,6 +44,7 @@ type UploadStep =
 export function UploadVideoForm() {
   const { address, isConnected } = useAccount();
   const router = useRouter();
+
   const {
     createVideo,
     isPending,
@@ -53,6 +53,9 @@ export function UploadVideoForm() {
     error: contractError,
     hash,
   } = useCreateVideo();
+
+  // Read current videoCount so we can predict the new video's ID
+  const { data: videoCount, refetch: refetchVideoCount } = useVideoCount();
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
@@ -70,13 +73,30 @@ export function UploadVideoForm() {
   const [stepLabel, setStepLabel] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Track created video ID for redirect
-  const createdVideoIdRef = useRef<number | null>(null);
+  // Store the expected video ID (videoCount + 1 at time of submit)
+  const expectedVideoIdRef = useRef<number>(1);
 
-  // Redirect after on-chain confirmation
-  if (isSuccess && createdVideoIdRef.current) {
-    router.push(`/videos/${createdVideoIdRef.current}`);
-  }
+  // ── Watch for transaction success and redirect ──────────
+  useEffect(() => {
+    if (isSuccess && step === "confirming") {
+      setStep("done");
+      setProgress(100);
+      toast.success("Video published successfully!");
+      // Refetch video count then redirect to the new video
+      refetchVideoCount().then(() => {
+        router.push(`/videos/${expectedVideoIdRef.current}`);
+      });
+    }
+  }, [isSuccess, step, router, refetchVideoCount]);
+
+  // ── Watch for contract errors ───────────────────────────
+  useEffect(() => {
+    if (contractError && step === "confirming") {
+      setErrorMsg(contractError.message);
+      setStep("error");
+      toast.error(`Transaction failed: ${contractError.message}`);
+    }
+  }, [contractError, step]);
 
   const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -117,16 +137,17 @@ export function UploadVideoForm() {
       return;
     }
     if (!isContractConfigured()) {
-      toast.error(
-        "Contract not deployed yet. Set NEXT_PUBLIC_CIPHERSTREAM_CONTRACT_ADDRESS."
-      );
+      toast.error("Contract not configured. Set NEXT_PUBLIC_CIPHERSTREAM_CONTRACT_ADDRESS.");
       return;
     }
+
+    // Store expected video ID = current count + 1
+    expectedVideoIdRef.current = videoCount ? Number(videoCount) + 1 : 1;
 
     try {
       setErrorMsg("");
 
-      // ── Step 1: Encrypt video ──────────────────────────────
+      // ── Step 1: Encrypt ──────────────────────────────────
       setStep("encrypting");
       setStepLabel("Encrypting video in your browser...");
       setProgress(5);
@@ -138,7 +159,7 @@ export function UploadVideoForm() {
       );
       setProgress(35);
 
-      // ── Step 2: Upload encrypted video to Pinata ──────────
+      // ── Step 2: Upload encrypted video ──────────────────
       setStep("uploading-video");
       setStepLabel("Uploading encrypted video to IPFS...");
 
@@ -162,7 +183,7 @@ export function UploadVideoForm() {
       const { cid: encryptedVideoCID } = await videoUploadRes.json();
       setProgress(60);
 
-      // ── Step 3: Upload thumbnail ───────────────────────────
+      // ── Step 3: Upload thumbnail ─────────────────────────
       let thumbnailCID = "";
       if (thumbnailFile) {
         setStep("uploading-thumbnail");
@@ -185,21 +206,15 @@ export function UploadVideoForm() {
       }
       setProgress(70);
 
-      // ── Step 4: Register AES key (MVP demo) ───────────────
-      // TODO (production): Replace with Lit Protocol threshold encryption.
-      // The key should be encrypted with the creator's wallet public key
-      // and stored in a decentralized key management system.
+      // ── Step 4: Register AES key ─────────────────────────
+      // TODO (production): Replace with Lit Protocol.
       setStep("registering-key");
-      setStepLabel("Registering encryption key (demo)...");
+      setStepLabel("Registering encryption key...");
 
       const keyRes = await fetch("/api/key/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cid: encryptedVideoCID,
-          keyBase64,
-          creator: address,
-        }),
+        body: JSON.stringify({ cid: encryptedVideoCID, keyBase64, creator: address }),
       });
       if (!keyRes.ok) {
         const err = await keyRes.json();
@@ -207,14 +222,16 @@ export function UploadVideoForm() {
       }
       setProgress(80);
 
-      // ── Step 5: Create video on-chain ─────────────────────
+      // ── Step 5: Submit on-chain transaction ──────────────
       setStep("creating-on-chain");
-      setStepLabel("Creating video record on Arbitrum...");
+      setStepLabel("Confirm transaction in MetaMask...");
 
-      const accessDurationSeconds =
-        Math.floor(parseFloat(form.accessDurationHours) * 3600);
+      const accessDurationSeconds = Math.floor(
+        parseFloat(form.accessDurationHours) * 3600
+      );
 
-      createVideo({
+      // await the async createVideo — this waits for MetaMask confirmation
+      await createVideo({
         title: form.title,
         description: form.description,
         encryptedVideoCID,
@@ -223,14 +240,11 @@ export function UploadVideoForm() {
         accessDurationSeconds,
       });
 
+      // Transaction submitted — now wait for on-chain confirmation
       setStep("confirming");
       setStepLabel("Waiting for transaction confirmation...");
       setProgress(90);
 
-      // The redirect happens via the isSuccess effect above
-      // We need to figure out the video ID — use videoCount + 1 as estimate
-      // (In production, parse the VideoCreated event from the receipt)
-      toast.success("Video uploaded! Waiting for confirmation...");
     } catch (err) {
       console.error("Upload error:", err);
       const msg = err instanceof Error ? err.message : "Upload failed.";
@@ -240,8 +254,7 @@ export function UploadVideoForm() {
     }
   };
 
-  const isLoading =
-    step !== "idle" && step !== "done" && step !== "error";
+  const isLoading = step !== "idle" && step !== "done" && step !== "error";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -250,15 +263,9 @@ export function UploadVideoForm() {
         <div className="flex items-start gap-3 p-4 rounded-xl border border-amber-600/40 bg-amber-900/20">
           <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-medium text-amber-300">
-              Contract not configured
-            </p>
+            <p className="text-sm font-medium text-amber-300">Contract not configured</p>
             <p className="text-xs text-amber-400/80 mt-1">
-              Deploy the smart contract and set{" "}
-              <code className="font-mono">
-                NEXT_PUBLIC_CIPHERSTREAM_CONTRACT_ADDRESS
-              </code>{" "}
-              in your environment variables.
+              Set <code className="font-mono">NEXT_PUBLIC_CIPHERSTREAM_CONTRACT_ADDRESS</code> in environment variables.
             </p>
           </div>
         </div>
@@ -270,9 +277,8 @@ export function UploadVideoForm() {
         <div className="text-xs text-cyan-300/80 space-y-1">
           <p className="font-medium text-cyan-300">How encryption works</p>
           <p>
-            Your video is encrypted with AES-GCM 256-bit in your browser before
-            upload. Only the encrypted file reaches IPFS — the original is never
-            transmitted.
+            Your video is encrypted with AES-GCM 256-bit in your browser before upload.
+            Only the encrypted file reaches IPFS.
           </p>
         </div>
       </div>
@@ -310,9 +316,7 @@ export function UploadVideoForm() {
           onClick={() => !isLoading && videoInputRef.current?.click()}
           className={cn(
             "border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all",
-            videoFile
-              ? "border-green-600/50 bg-green-900/10"
-              : "border-purple-900/40 hover:border-purple-600/50 hover:bg-purple-900/10",
+            videoFile ? "border-green-600/50 bg-green-900/10" : "border-purple-900/40 hover:border-purple-600/50 hover:bg-purple-900/10",
             isLoading && "opacity-50 cursor-not-allowed"
           )}
         >
@@ -327,19 +331,13 @@ export function UploadVideoForm() {
           {videoFile ? (
             <div className="flex flex-col items-center gap-2">
               <CheckCircle className="w-8 h-8 text-green-400" />
-              <p className="text-sm font-medium text-green-300">
-                {videoFile.name}
-              </p>
-              <p className="text-xs text-slate-500">
-                {formatBytes(videoFile.size)}
-              </p>
+              <p className="text-sm font-medium text-green-300">{videoFile.name}</p>
+              <p className="text-xs text-slate-500">{formatBytes(videoFile.size)}</p>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-2">
               <Video className="w-8 h-8 text-purple-400" />
-              <p className="text-sm text-slate-400">
-                Click to select video (MP4, WebM, MOV)
-              </p>
+              <p className="text-sm text-slate-400">Click to select video (MP4, WebM, MOV)</p>
               <p className="text-xs text-slate-600">Max {MAX_VIDEO_MB}MB</p>
             </div>
           )}
@@ -353,9 +351,7 @@ export function UploadVideoForm() {
           onClick={() => !isLoading && thumbInputRef.current?.click()}
           className={cn(
             "border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all",
-            thumbnailFile
-              ? "border-green-600/50 bg-green-900/10"
-              : "border-purple-900/40 hover:border-purple-600/50 hover:bg-purple-900/10",
+            thumbnailFile ? "border-green-600/50 bg-green-900/10" : "border-purple-900/40 hover:border-purple-600/50 hover:bg-purple-900/10",
             isLoading && "opacity-50 cursor-not-allowed"
           )}
         >
@@ -375,9 +371,7 @@ export function UploadVideoForm() {
           ) : (
             <div className="flex flex-col items-center gap-2">
               <ImageIcon className="w-6 h-6 text-purple-400" />
-              <p className="text-sm text-slate-400">
-                Click to select thumbnail (PNG, JPEG, WebP)
-              </p>
+              <p className="text-sm text-slate-400">Click to select thumbnail (PNG, JPEG, WebP)</p>
             </div>
           )}
         </div>
@@ -408,9 +402,7 @@ export function UploadVideoForm() {
             min="1"
             placeholder="24"
             value={form.accessDurationHours}
-            onChange={(e) =>
-              setForm({ ...form, accessDurationHours: e.target.value })
-            }
+            onChange={(e) => setForm({ ...form, accessDurationHours: e.target.value })}
             required
             disabled={isLoading}
           />
@@ -427,8 +419,26 @@ export function UploadVideoForm() {
             </div>
             <Progress value={progress} />
             <p className="text-xs text-slate-500">{progress}% complete</p>
+            {step === "confirming" && hash && (
+              <a
+                href={`https://sepolia.arbiscan.io/tx/${hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-purple-400 hover:text-purple-300 underline"
+              >
+                View transaction on Arbiscan ↗
+              </a>
+            )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Success */}
+      {step === "done" && (
+        <div className="flex items-center gap-3 p-4 rounded-xl border border-green-600/40 bg-green-900/20">
+          <CheckCircle className="w-5 h-5 text-green-400" />
+          <p className="text-sm text-green-300">Video published! Redirecting...</p>
+        </div>
       )}
 
       {/* Error */}
@@ -440,7 +450,7 @@ export function UploadVideoForm() {
       )}
 
       {/* Contract error */}
-      {contractError && (
+      {contractError && step !== "error" && (
         <div className="flex items-start gap-3 p-4 rounded-xl border border-red-600/40 bg-red-900/20">
           <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
           <p className="text-sm text-red-300">
