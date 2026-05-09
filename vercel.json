@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node node_modules/next/dist/bin/next build",
+  "framework": "nextjs",
   "installCommand": "npm install --legacy-peer-deps",
-  "framework": "nextjs"
+  "buildCommand": "next build"
 }
