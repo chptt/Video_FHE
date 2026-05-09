@@ -1,20 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-/**
- * Key Registry — stores AES key as a JSON file on Pinata IPFS.
- *
- * The key JSON is pinned to IPFS with the video CID as metadata.
- * On retrieval, we query Pinata's pin list filtered by the video CID
- * to find the key file's CID, then fetch the key JSON from IPFS.
- *
- * This persists across Vercel serverless cold starts because the data
- * lives on IPFS/Pinata, not in server memory.
- *
- * TODO (production): Replace with Lit Protocol threshold encryption.
- * The key should never be stored in plaintext — encrypt it with the
- * creator's wallet public key (ECIES) before storing.
- */
-
 const PINATA_JWT = process.env.PINATA_JWT!;
 const PINATA_API = "https://api.pinata.cloud";
 
@@ -35,19 +20,23 @@ export async function POST(req: NextRequest) {
     }
 
     if (!PINATA_JWT) {
-      return NextResponse.json(
-        { error: "Pinata not configured on server." },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Pinata not configured." }, { status: 500 });
     }
 
-    // Build the key JSON payload
-    const keyPayload = JSON.stringify({ keyBase64, creator, videoCid: cid });
-    const keyFile = new File([keyPayload], `key_${cid.slice(0, 16)}.json`, {
-      type: "application/json",
+    // Store key as JSON file on Pinata with searchable metadata
+    const keyPayload = JSON.stringify({
+      keyBase64,
+      creator,
+      videoCid: cid,
+      createdAt: new Date().toISOString(),
     });
 
-    // Upload key JSON to Pinata with videoCid as searchable metadata
+    const keyFile = new File(
+      [keyPayload],
+      `cipherstream_key_${cid.slice(0, 16)}.json`,
+      { type: "application/json" }
+    );
+
     const formData = new FormData();
     formData.append("file", keyFile);
     formData.append(
@@ -81,7 +70,7 @@ export async function POST(req: NextRequest) {
 
     const pinData = await pinRes.json();
     console.log(
-      `[KeyRegistry] Key stored on IPFS. keyCid=${pinData.IpfsHash} videoCid=${cid.slice(0, 20)}...`
+      `[KeyRegistry] Key stored. keyCid=${pinData.IpfsHash} videoCid=${cid.slice(0, 20)}...`
     );
 
     return NextResponse.json(
@@ -90,9 +79,6 @@ export async function POST(req: NextRequest) {
     );
   } catch (err) {
     console.error("Key register error:", err);
-    return NextResponse.json(
-      { error: "Internal server error." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error." }, { status: 500 });
   }
 }
