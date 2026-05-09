@@ -11,9 +11,13 @@
     "verify": "hardhat verify --network arbitrumSepolia"
   },
   "devDependencies": {
-    "hardhat": "^3.0.0",
     "@nomicfoundation/hardhat-toolbox": "latest",
     "@openzeppelin/contracts": "^5.1.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "hardhat": "^3.0.0"
+  },
+  "dependencies": {
+    "ethers": "^6.16.0",
+    "solc": "^0.8.35"
   }
 }
