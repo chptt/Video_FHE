@@ -9,32 +9,35 @@ import {
   useChainId,
   usePublicClient,
 } from "wagmi";
-import { parseEther, type Address } from "viem";
+import { parseEther, type Address, parseGwei } from "viem";
 import { CONTRACT_ADDRESS, CONTRACT_ABI, isContractConfigured } from "./contract";
 import { arbitrumSepolia } from "./chains";
 
 // =========================================================
-// Gas helper — fetches current base fee and adds 50% buffer
-// so maxFeePerGas is always above the block base fee.
-// Arbitrum Sepolia base fees can fluctuate; this prevents
-// "max fee per gas less than block base fee" errors.
+// Gas helper
+// Fetches the current base fee and returns maxFeePerGas with
+// a generous 2x multiplier so it always clears the base fee.
+// Arbitrum Sepolia base fees are tiny (~0.02 gwei) but wagmi's
+// internal estimate can be stale. We override it explicitly.
 // =========================================================
-async function getGasOverrides(publicClient: ReturnType<typeof usePublicClient>) {
+async function getGasFees(publicClient: ReturnType<typeof usePublicClient>) {
   try {
     if (!publicClient) return {};
-    const block = await publicClient.getBlock({ blockTag: "latest" });
-    if (!block.baseFeePerGas) return {};
 
-    // Add 50% buffer on top of current base fee
-    const baseFee = block.baseFeePerGas;
-    const buffer = baseFee / 2n; // 50%
-    const maxFeePerGas = baseFee + buffer + 1_000_000n; // extra 0.001 gwei safety margin
-    const maxPriorityFeePerGas = 1_000_000n; // 0.001 gwei tip
+    const block = await publicClient.getBlock({ blockTag: "latest" });
+    const baseFee = block.baseFeePerGas ?? parseGwei("0.1");
+
+    // 2x the current base fee + 10M wei tip — always safe
+    const maxFeePerGas = baseFee * 2n + parseGwei("0.01");
+    const maxPriorityFeePerGas = parseGwei("0.01");
 
     return { maxFeePerGas, maxPriorityFeePerGas };
   } catch {
-    // If we can't fetch, let the wallet handle it
-    return {};
+    // Fallback: use a safe hardcoded value (0.1 gwei) if RPC fails
+    return {
+      maxFeePerGas: parseGwei("0.1"),
+      maxPriorityFeePerGas: parseGwei("0.01"),
+    };
   }
 }
 
@@ -160,7 +163,7 @@ export function useCreateVideo() {
     priceEth: string;
     accessDurationSeconds: number;
   }) => {
-    const gasOverrides = await getGasOverrides(publicClient);
+    const fees = await getGasFees(publicClient);
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
@@ -173,7 +176,8 @@ export function useCreateVideo() {
         parseEther(params.priceEth),
         BigInt(params.accessDurationSeconds),
       ],
-      ...gasOverrides,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
     });
   };
 
@@ -186,14 +190,15 @@ export function useUnlockAccess() {
   const publicClient = usePublicClient();
 
   const unlockAccess = async (videoId: number, priceWei: bigint) => {
-    const gasOverrides = await getGasOverrides(publicClient);
+    const fees = await getGasFees(publicClient);
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
       functionName: "unlockAccess",
       args: [BigInt(videoId)],
       value: priceWei,
-      ...gasOverrides,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
     });
   };
 
@@ -206,12 +211,13 @@ export function useWithdraw() {
   const publicClient = usePublicClient();
 
   const withdraw = async () => {
-    const gasOverrides = await getGasOverrides(publicClient);
+    const fees = await getGasFees(publicClient);
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
       functionName: "withdraw",
-      ...gasOverrides,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
     });
   };
 
@@ -224,13 +230,14 @@ export function useSetVideoActive() {
   const publicClient = usePublicClient();
 
   const setVideoActive = async (videoId: number, active: boolean) => {
-    const gasOverrides = await getGasOverrides(publicClient);
+    const fees = await getGasFees(publicClient);
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: CONTRACT_ABI,
       functionName: "setVideoActive",
       args: [BigInt(videoId), active],
-      ...gasOverrides,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
     });
   };
 
